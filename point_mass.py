@@ -11,7 +11,8 @@ plt.style.use('seaborn')
 
 nq = 12 # dimension of joint configuration vector
 nr = 3 # dimension of centroid configuration vector
-nF = 3*8 # dimension of force vector
+nj = 8 # number of contact points
+nF = 3*nj # dimension of force vector
 
 leg_len = np.array([0.5, 0.5]) # thigh and calf lengh respectively
 torso_size = np.array([0, 0.3, 0.5]) # x,y,z length of torso
@@ -74,7 +75,7 @@ spline = CubicSpline(t, r_des, axis=1)
 xr_des = np.vstack((spline(t), spline(t,1)))
 
 # desired foot location
-o_feet_des = np.hstack(( \
+c_des = np.hstack(( \
     np.array([foot_size[0]/2, -torso_size[1]/2-foot_size[1]/2, 0])[:,None],
     np.array([foot_size[0]/2, -torso_size[1]/2+foot_size[1]/2, 0])[:,None],
     np.array([-foot_size[0]/2, -torso_size[1]/2-foot_size[1]/2, 0])[:,None],
@@ -174,36 +175,22 @@ def derive_forkin():
     T_lc3 = T_l6 @ T6_c3
     T_lc4 = T_l6 @ T6_c4
 
-    o_feet_sym = ca.horzcat(T_rc1[0:3,3], T_rc2[0:3,3], T_rc3[0:3,3], T_rc4[0:3,3],
+    p_feet_sym = ca.horzcat(T_rc1[0:3,3], T_rc2[0:3,3], T_rc3[0:3,3], T_rc4[0:3,3],
         T_lc1[0:3,3], T_lc2[0:3,3], T_lc3[0:3,3], T_lc4[0:3,3])
-    forkin_feet = ca.Function('forkin_feet', [q], [o_feet_sym])
+    forkin_feet = ca.Function('forkin_feet', [q], [p_feet_sym])
 
-    o_leg_sym = ca.horzcat(T_r1[0:3,3], T_r3[0:3,3], T_r6[0:3,3],
+    p_leg_sym = ca.horzcat(T_r1[0:3,3], T_r3[0:3,3], T_r6[0:3,3],
         T_l1[0:3,3], T_l3[0:3,3], T_l6[0:3,3])
-    forkin_leg = ca.Function('forkin_leg', [q], [o_leg_sym])
+    forkin_leg = ca.Function('forkin_leg', [q], [p_leg_sym])
 
     return forkin_feet, forkin_leg
-
-# derive function for returning torso frame
-def derive_T_r():
-    r = ca.SX.sym('r', nr)
-    T_r_sym = np.array([ \
-        [1, 0, 0, r[0]],
-        [0, 1, 0, r[1]],
-        [0, 0, 1, r[2]],
-        [0, 0, 0, 1]
-        ])
-
-    T_r = ca.Function('T_r', [r], [T_r_sym])
-    return T_r
 
 # derive dynamic equation of motion
 def derive_dynamics():
     xr = ca.SX.sym('xr', nr*2)
     uF = ca.SX.sym('uF', nF)
 
-    # TODO: multiply F by T of feet to account for slanted terrains
-    F_net = ca.sum2(uF.reshape((3,8)))
+    F_net = ca.sum2(uF.reshape((3,nj)))
     rddot = F_net/m + g
 
     f_sym = ca.vertcat(xr[nr:], rddot)
@@ -212,8 +199,7 @@ def derive_dynamics():
     return f
 
 _, T = derive_coord_trans()
-forkin_feet, forkin_leg = derive_forkin()
-T_r = derive_T_r()
+forkin_feet, forkin_leg = derive_forkin()   
 f = derive_dynamics()
 
 # trajectory optimization
@@ -249,6 +235,7 @@ opti.minimize(J)
 opti.subject_to(XQ[:,0] ==  np.hstack((q_init, np.zeros(q_init.shape))))
 
 for i in range(2*N+1):
+    # point mass dynamics constraints imposed through Hermite-Simpson
     if i%2 != 0:
         # for each finite element:
         xr_left, xr_mid, xr_right = XR[:,i-1], XR[:,i], XR[:,i+1]
@@ -267,34 +254,40 @@ for i in range(2*N+1):
             # equation (6.12) in Kelly 2017
             tf/N*(f_left+4*f_mid+f_right)/6.0 == xr_right-xr_left)
 
+    # all other constraints imposed at every timestep
+    
+    q_i = XQ[:nq,i] # joint angles at current timestep
+    q_i_prev = XQ[:nq,i-1] # joint angles at prev timestep
+    qd_i = XQ[nq:,i] # joint vel at current timestep
+    r_i = XR[:nr,i] # COM position at current timestep
+    F_i = UF[:,i].reshape((3,nj)) # contact forces at current timestep, 3xnj matrix
+    c_rel_i = forkin_feet(q_i) # contact pos rel to COM at current timestep, 3xnj matrix
+    c_i = r_i + c_rel_i # global contact pos at current timestep, 3xnj matrix
+
     # backwards euler velocity constraint on joint angles
     if i != 0:
         opti.subject_to( \
-            # q_i - q_{i-1} = qdot_i * dt
-            XQ[:nq,i]-XQ[:nq,i-1] == XQ[nq:,i]*tf/(2*N))
+           q_i - q_i_prev == qd_i*tf/(2*N))
 
     # forward kinematics constraint
-    o_feet_rel_i = forkin_feet(XQ[:nq,i])
-    o_feet_i = XR[:nr,i] + o_feet_rel_i
-    opti.subject_to(o_feet_i == o_feet_des)
+    opti.subject_to(c_i == c_des)
 
     # zero angular momentum constraint
-    torque = ca.MX.zeros(3,8)
-    for j in range(8):
-        torque[:,j] = ca.cross(o_feet_rel_i[:,j], UF[3*j:3*j+3,i])
-    opti.subject_to(ca.sum2(torque) == np.zeros((3,1)))
+    torque_i = ca.MX.zeros(3,nj)
+    for j in range(nj):
+        torque_i[:,j] = ca.cross(c_rel_i[:,j], F_i[:,j])
+    opti.subject_to(ca.sum2(torque_i) == np.zeros((3,1)))
 
     #friction cone constraint
-    Fz = UF[:,i].reshape((3,8))[-1,:]
-    opti.subject_to(Fz >= np.zeros(Fz.shape))
-    for j in range(8):
-        opti.subject_to(UF[3*j,i] <= mu*Fz[j])
-        opti.subject_to(-UF[3*j,i] <= mu*Fz[j])
-        opti.subject_to(UF[3*j+1,i] <= mu*Fz[j])
-        opti.subject_to(-UF[3*j+1,i] <= mu*Fz[j])
+    Fx_i = F_i[0,:]
+    Fy_i = F_i[1,:]
+    Fz_i = F_i[2,:]
+    opti.subject_to(Fz_i >= np.zeros(Fz_i.shape))
+    opti.subject_to(opti.bounded(-mu*Fz_i, Fx_i, mu*Fz_i))
+    opti.subject_to(opti.bounded(-mu*Fz_i, Fy_i, mu*Fz_i))
 
     #joint constraints
-    opti.subject_to(opti.bounded(q_bounds[:,0], XQ[:nq,i], q_bounds[:,1]))
+    opti.subject_to(opti.bounded(q_bounds[:,0], q_i, q_bounds[:,1]))
 
 # initial guess for decision variables
 XR_guess = np.repeat(np.array([0, 0, 1.5, 0, 0, 0])[None,:],2*N+1,axis=0).T
@@ -320,43 +313,43 @@ F_len = 0.02
 for i in range(2*N+1):
     r_i = np.array(XR_sol[:nr,i])
     q_i = np.array(XQ_sol[:nq,i])
-    o_feet_i = np.array(r_i + forkin_feet(XQ_sol[:,i]))
-    o_leg_i = np.array(r_i + forkin_leg(XQ_sol[:,i]))
+    p_feet_i = np.array(r_i + forkin_feet(XQ_sol[:,i]))
+    p_leg_i = np.array(r_i + forkin_leg(XQ_sol[:,i]))
     F_i = np.array(UF_sol[:,i])
 
-    o_i = {}
-    o_i['r']  = r_i[:,None]
-    o_i['r1'] = o_leg_i[:,0][:,None]
-    o_i['r3'] = o_leg_i[:,1][:,None]
-    o_i['r6'] = o_leg_i[:,2][:,None]
-    o_i['l1'] = o_leg_i[:,3][:,None]
-    o_i['l3'] = o_leg_i[:,4][:,None]
-    o_i['l6'] = o_leg_i[:,5][:,None]
-    o_i['rc1'] = o_feet_i[:,0][:,None]
-    o_i['rc2'] = o_feet_i[:,1][:,None]
-    o_i['rc3'] = o_feet_i[:,2][:,None]
-    o_i['rc4'] = o_feet_i[:,3][:,None]
-    o_i['lc1'] = o_feet_i[:,4][:,None]
-    o_i['lc2'] = o_feet_i[:,5][:,None]
-    o_i['lc3'] = o_feet_i[:,6][:,None]
-    o_i['lc4'] = o_feet_i[:,7][:,None]
+    p_i = {}
+    p_i['r']  = r_i[:,None]
+    p_i['r1'] = p_leg_i[:,0][:,None]
+    p_i['r3'] = p_leg_i[:,1][:,None]
+    p_i['r6'] = p_leg_i[:,2][:,None]
+    p_i['l1'] = p_leg_i[:,3][:,None]
+    p_i['l3'] = p_leg_i[:,4][:,None]
+    p_i['l6'] = p_leg_i[:,5][:,None]
+    p_i['rc1'] = p_feet_i[:,0][:,None]
+    p_i['rc2'] = p_feet_i[:,1][:,None]
+    p_i['rc3'] = p_feet_i[:,2][:,None]
+    p_i['rc4'] = p_feet_i[:,3][:,None]
+    p_i['lc1'] = p_feet_i[:,4][:,None]
+    p_i['lc2'] = p_feet_i[:,5][:,None]
+    p_i['lc3'] = p_feet_i[:,6][:,None]
+    p_i['lc4'] = p_feet_i[:,7][:,None]
 
     F_vec_i = {}
-    F_vec_i['rc1'] = o_i['rc1'] + F_len * F_i[0:3][:,None]
-    F_vec_i['rc2'] = o_i['rc2'] + F_len * F_i[3:6][:,None]
-    F_vec_i['rc3'] = o_i['rc3'] + F_len * F_i[6:9][:,None]
-    F_vec_i['rc4'] = o_i['rc4'] + F_len * F_i[9:12][:,None]
-    F_vec_i['lc1'] = o_i['lc1'] + F_len * F_i[12:15][:,None]
-    F_vec_i['lc2'] = o_i['lc2'] + F_len * F_i[15:18][:,None]
-    F_vec_i['lc3'] = o_i['lc3'] + F_len * F_i[18:21][:,None]
-    F_vec_i['lc4'] = o_i['lc4'] + F_len * F_i[21:24][:,None]
+    F_vec_i['rc1'] = p_i['rc1'] + F_len * F_i[0:3][:,None]
+    F_vec_i['rc2'] = p_i['rc2'] + F_len * F_i[3:6][:,None]
+    F_vec_i['rc3'] = p_i['rc3'] + F_len * F_i[6:9][:,None]
+    F_vec_i['rc4'] = p_i['rc4'] + F_len * F_i[9:12][:,None]
+    F_vec_i['lc1'] = p_i['lc1'] + F_len * F_i[12:15][:,None]
+    F_vec_i['lc2'] = p_i['lc2'] + F_len * F_i[15:18][:,None]
+    F_vec_i['lc3'] = p_i['lc3'] + F_len * F_i[18:21][:,None]
+    F_vec_i['lc4'] = p_i['lc4'] + F_len * F_i[21:24][:,None]
 
     if i==0:
-        o = o_i
+        p = p_i
         F_vec = F_vec_i
     else:
-        for k, v in o_i.items():
-            o[k] = np.hstack((o[k], v))
+        for k, v in p_i.items():
+            p[k] = np.hstack((p[k], v))
         for k, v in F_vec_i.items():
             F_vec[k] = np.hstack((F_vec[k], v))
 
@@ -365,22 +358,22 @@ leg_l_coord = np.zeros((3, 3, 2*N+1))
 foot_r_coord = np.zeros((3, 5, 2*N+1))
 foot_l_coord = np.zeros((3, 5, 2*N+1))
 torso_coord = np.zeros((3, 4, 2*N+1))
-F_coord = np.zeros((8, 3, 2, 2*N+1)) #(# forces)*(cartesian space)*(# datapoints)*(# time points) 
+F_coord = np.zeros((nj, 3, 2, 2*N+1)) #(# forces)*(cartesian space)*(# datapoints)*(# time points) 
 for xyz in range(3):
-    leg_r_coord[xyz,:,:] = np.array([o['r1'][xyz,:], o['r3'][xyz,:], o['r6'][xyz,:]])
-    leg_l_coord[xyz,:,:] = np.array([o['l1'][xyz,:], o['l3'][xyz,:], o['l6'][xyz,:]])
-    foot_r_coord[xyz,:,:] = np.array([o['rc1'][xyz,:], o['rc2'][xyz,:], 
-        o['rc4'][xyz,:], o['rc3'][xyz,:], o['rc1'][xyz,:]])
-    foot_l_coord[xyz,:,:] = np.array([o['lc1'][xyz,:], o['lc2'][xyz,:], 
-        o['lc4'][xyz,:], o['lc3'][xyz,:], o['lc1'][xyz,:]])
-    torso_coord[xyz,:,:] = np.array([o['r'][xyz,:], o['r1'][xyz,:], 
-        o['l1'][xyz,:], o['r'][xyz,:]])
+    leg_r_coord[xyz,:,:] = np.array([p['r1'][xyz,:], p['r3'][xyz,:], p['r6'][xyz,:]])
+    leg_l_coord[xyz,:,:] = np.array([p['l1'][xyz,:], p['l3'][xyz,:], p['l6'][xyz,:]])
+    foot_r_coord[xyz,:,:] = np.array([p['rc1'][xyz,:], p['rc2'][xyz,:], 
+        p['rc4'][xyz,:], p['rc3'][xyz,:], p['rc1'][xyz,:]])
+    foot_l_coord[xyz,:,:] = np.array([p['lc1'][xyz,:], p['lc2'][xyz,:], 
+        p['lc4'][xyz,:], p['lc3'][xyz,:], p['lc1'][xyz,:]])
+    torso_coord[xyz,:,:] = np.array([p['r'][xyz,:], p['r1'][xyz,:], 
+        p['l1'][xyz,:], p['r'][xyz,:]])
     for j, key in enumerate(['rc1', 'rc2', 'rc3', 'rc4', 'lc1', 'lc2', 'lc3', 'lc4']):
-        F_coord[j,xyz,:,:] = np.array([o[key][xyz,:], F_vec[key][xyz,:]])
+        F_coord[j,xyz,:,:] = np.array([p[key][xyz,:], F_vec[key][xyz,:]])
 
 anim_fig = plt.figure(figsize=(12, 12))
 ax = Axes3D(anim_fig)
-lines = [plt.plot([], [])[0] for _ in range(6+8)]
+lines = [plt.plot([], [])[0] for _ in range(6+nj)]
 
 def animate(i):
 
@@ -400,7 +393,7 @@ def animate(i):
     lines[5].set_data(r_des[0,i], r_des[1,i])
     lines[5].set_3d_properties(r_des[2,i])
 
-    for j in range(8):
+    for j in range(nj):
         lines[6+j].set_data(F_coord[j,0,:,i], F_coord[j,1,:,i])
         lines[6+j].set_3d_properties(F_coord[j,2,:,i])
 
