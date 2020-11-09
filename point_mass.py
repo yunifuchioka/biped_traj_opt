@@ -12,7 +12,7 @@ plt.style.use('seaborn')
 nq = 12 # dimension of joint configuration vector
 nr = 3 # dimension of centroid configuration vector
 nj = 8 # number of contact points
-nF = 3*nj # dimension of force vector
+nj3 = 3*nj # dimension of vectors associated with contact points
 
 leg_len = np.array([0.5, 0.5]) # thigh and calf lengh respectively
 torso_size = np.array([0, 0.3, 0.5]) # x,y,z length of torso
@@ -32,8 +32,8 @@ N = 100 # number of hermite-simpson finite elements. Total # of points = 2*N+1
 tf = 20.0 # final time of interval
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
-# initial joint angle
-q_init = np.array([ \
+# "default" joint angle configuration
+q_guess = np.array([ \
     0, 0, -0.05, 0.1, -0.05, 0,
     0, 0, -0.05, 0.1, -0.05, 0
     ])
@@ -58,7 +58,7 @@ q_bounds = np.array([ \
 Qr = np.array([1000, 1000, 1000])
 Qrd = np.array([1, 1, 1])
 Qqd = np.full((nq*2), 1)
-RF = np.full((nF), 0.001)
+RF = np.full((nj3), 0.001)
 
 # desired torso pose trajectory
 r_des = np.array([ \
@@ -188,7 +188,7 @@ def derive_forkin():
 # derive dynamic equation of motion
 def derive_dynamics():
     xr = ca.SX.sym('xr', nr*2)
-    uF = ca.SX.sym('uF', nF)
+    uF = ca.SX.sym('uF', nj3)
 
     F_net = ca.sum2(uF.reshape((3,nj)))
     rddot = F_net/m + g
@@ -208,7 +208,8 @@ opti = ca.Opti()
 # decision variables
 XR = opti.variable(nr*2, 2*N+1) # configuration + velocity of COM position
 XQ = opti.variable(nq*2, 2*N+1) # configuration + velocity of joint angles
-UF = opti.variable(nF, 2*N+1) # contact point force
+XC = opti.variable(nj3, 2*N+1) # configuration of contact points
+UF = opti.variable(nj3, 2*N+1) # contact point force
 
 # cost
 # simpson quadrature coefficients, to be used to compute integrals
@@ -226,13 +227,13 @@ for i in range(2*N+1):
     for q_idx in range(nq):
         J += Qqd[q_idx]*simp[0][i]*(XQ[nq+q_idx,i])**2
 
-    for F_idx in range(nF):
+    for F_idx in range(nj3):
         J += RF[F_idx]*simp[0][i]*(UF[F_idx,i])**2
 
 opti.minimize(J)
 
 # initial condition constraint
-opti.subject_to(XQ[:,0] ==  np.hstack((q_init, np.zeros(q_init.shape))))
+opti.subject_to(XR[:,0] ==  xr_des[:,0])
 
 for i in range(2*N+1):
     # point mass dynamics constraints imposed through Hermite-Simpson
@@ -261,8 +262,9 @@ for i in range(2*N+1):
     qd_i = XQ[nq:,i] # joint vel at current timestep
     r_i = XR[:nr,i] # COM position at current timestep
     F_i = UF[:,i].reshape((3,nj)) # contact forces at current timestep, 3xnj matrix
-    c_rel_i = forkin_feet(q_i) # contact pos rel to COM at current timestep, 3xnj matrix
-    c_i = r_i + c_rel_i # global contact pos at current timestep, 3xnj matrix
+    c_i = XC[:nj3,i].reshape((3,nj)) # global contact pos at current timestep, 3xnj matrix
+    c_i_prev = XC[:nj3,i-1].reshape((3,nj)) # global contact pos at prev timestep, 3xnj matrix
+    c_rel_i = c_i - r_i # contact pos rel to COM at current timestep, 3xnj matrix
 
     # backwards euler velocity constraint on joint angles
     if i != 0:
@@ -270,6 +272,9 @@ for i in range(2*N+1):
            q_i - q_i_prev == qd_i*tf/(2*N))
 
     # forward kinematics constraint
+    opti.subject_to(c_rel_i == forkin_feet(q_i))
+
+    # fixed contact location constraint
     opti.subject_to(c_i == c_des)
 
     # zero angular momentum constraint
@@ -290,9 +295,11 @@ for i in range(2*N+1):
     opti.subject_to(opti.bounded(q_bounds[:,0], q_i, q_bounds[:,1]))
 
 # initial guess for decision variables
-XR_guess = np.repeat(np.array([0, 0, 1.5, 0, 0, 0])[None,:],2*N+1,axis=0).T
-XQ_guess = np.repeat(np.hstack((q_init, np.zeros(q_init.shape)))[None,:],2*N+1,axis=0).T
+XR_guess = xr_des
+XC_guess = np.repeat(c_des.reshape((1,nj3),order='F'),2*N+1,axis=0).T
+XQ_guess = np.repeat(np.hstack((q_guess, np.zeros(q_guess.shape)))[None,:],2*N+1,axis=0).T
 opti.set_initial(XR, XR_guess)
+opti.set_initial(XC, XC_guess)
 opti.set_initial(XQ, XQ_guess)
 
 # solve NLP
