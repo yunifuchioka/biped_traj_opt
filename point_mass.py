@@ -9,20 +9,19 @@ from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.animation as animation
 plt.style.use('seaborn')
 
-nq = 12 # dimension of joint configuration vector
+nq = 8 # dimension of joint configuration vector
 nr = 3 # dimension of centroid configuration vector
-nj = 8 # number of contact points
+nj = 2 # number of contact points
 nj3 = 3*nj # dimension of vectors associated with contact points
 
 leg_len = np.array([0.5, 0.5]) # thigh and calf lengh respectively
 torso_size = np.array([0, 0.3, 0.5]) # x,y,z length of torso
-foot_size = np.array([0.2, 0.1, 0]) # x,y,z length of feet
 
 # Denavit Hartenberg parameters for a leg
-theta_offset =  np.array([0.0, -pi/2, 0.0, 0.0, 0.0, pi/2])
-d = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-a = np.array([0.0, 0.0, leg_len[0], leg_len[1], 0.0, 0.0])
-alpha = np.array([-pi/2, -pi/2, 0.0, 0.0, pi/2, pi/2])
+theta_offset =  np.array([0.0, -pi/2, 0.0, 0.0])
+d = np.array([0.0, 0.0, 0.0, 0.0])
+a = np.array([0.0, 0.0, leg_len[0], leg_len[1]])
+alpha = np.array([-pi/2, -pi/2, 0.0, 0.0])
 
 m = 10 # mass of torso
 g = np.array([0, 0, -9.81]) # gravitational acceleration
@@ -34,11 +33,23 @@ t = np.linspace(0,tf, 2*N+1) # discretized time
 
 # "default" joint angle configuration
 q_guess = np.array([ \
-    0, 0, -0.05, 0.1, -0.05, 0,
-    0, 0, -0.05, 0.1, -0.05, 0
+    0, 0, -0.05, 0.1,
+    0, 0, -0.05, 0.1,
     ])
 
 # joint angle limits
+'''
+q_bounds = np.array([ \
+    np.array([-1E-6, 1E-6]),
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([1E-6, pi]),
+    np.array([-1E-6, 1E-6]),
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([1E-6, pi])
+    ])
+'''
 q_bounds = np.array([ \
     np.array([-pi, pi]),
     np.array([-pi, pi]),
@@ -47,11 +58,7 @@ q_bounds = np.array([ \
     np.array([-pi, pi]),
     np.array([-pi, pi]),
     np.array([-pi, pi]),
-    np.array([-pi, pi]),
-    np.array([-pi, pi]),
-    np.array([1E-6, pi]),
-    np.array([-pi, pi]),
-    np.array([-pi, pi])
+    np.array([1E-6, pi])
     ])
 
 # objective cost weights
@@ -64,10 +71,10 @@ RF = np.full((nj3), 0.001)
 r_des = np.array([ \
     np.full((2*N+1), 0),
     #0.1* np.sin(2*t),
-    #np.full((2*N+1),0.01),
-    0.15* np.cos(2*t),
-    #np.full((2*N+1),1.4)
-    1.2 + 0.29*np.sin(2*t)
+    np.full((2*N+1),1E-3),
+    #0.15* np.cos(2*t),
+    np.full((2*N+1),1.4)
+    #1.2 + 0.29*np.sin(2*t)
     ])
 
 # generate torso pose and velocity trajectory
@@ -76,14 +83,8 @@ xr_des = np.vstack((spline(t), spline(t,1)))
 
 # desired foot location
 c_des = np.hstack(( \
-    np.array([foot_size[0]/2, -torso_size[1]/2-foot_size[1]/2, 0])[:,None],
-    np.array([foot_size[0]/2, -torso_size[1]/2+foot_size[1]/2, 0])[:,None],
-    np.array([-foot_size[0]/2, -torso_size[1]/2-foot_size[1]/2, 0])[:,None],
-    np.array([-foot_size[0]/2, -torso_size[1]/2+foot_size[1]/2, 0])[:,None],
-    np.array([foot_size[0]/2, torso_size[1]/2-foot_size[1]/2, 0])[:,None],
-    np.array([foot_size[0]/2, torso_size[1]/2+foot_size[1]/2, 0])[:,None],
-    np.array([-foot_size[0]/2, torso_size[1]/2-foot_size[1]/2, 0])[:,None],
-    np.array([-foot_size[0]/2, torso_size[1]/2+foot_size[1]/2, 0])[:,None]
+    np.array([0, -torso_size[1]/2, 0])[:,None],
+    np.array([0, torso_size[1]/2, 0])[:,None]
     ))
 
 # function derivations
@@ -128,59 +129,22 @@ def derive_forkin():
 
     T_base_right = T(pi/2, 0, -torso_size[2], -torso_size[1]/2, pi)
     T_base_left = T(pi/2, 0, -torso_size[2], torso_size[1]/2, pi)
-    T6_c1 = np.array([ \
-        [0, 1, 0, -foot_size[1]/2],
-        [1, 0, 0, foot_size[0]/2],
-        [0, 0, -1, 0],
-        [0, 0, 0, 1]
-        ])
-    T6_c2 = np.array([ \
-        [0, 1, 0, foot_size[1]/2],
-        [1, 0, 0, foot_size[0]/2],
-        [0, 0, -1, 0],
-        [0, 0, 0, 1]
-        ])
-    T6_c3 = np.array([ \
-        [0, 1, 0, -foot_size[1]/2],
-        [1, 0, 0, -foot_size[0]/2],
-        [0, 0, -1, 0],
-        [0, 0, 0, 1]
-        ])
-    T6_c4 = np.array([ \
-        [0, 1, 0, foot_size[1]/2],
-        [1, 0, 0, -foot_size[0]/2],
-        [0, 0, -1, 0],
-        [0, 0, 0, 1]
-        ])
 
     T_r1 = T_base_right @ T(q[0], theta_offset[0], d[0], a[0], alpha[0])
     T_r2 = T_r1 @ T(q[1], theta_offset[1], d[1], a[1], alpha[1])
     T_r3 = T_r2 @ T(q[2], theta_offset[2], d[2], a[2], alpha[2])
     T_r4 = T_r3 @ T(q[3], theta_offset[3], d[3], a[3], alpha[3])
-    T_r5 = T_r4 @ T(q[4], theta_offset[4], d[4], a[4], alpha[4])
-    T_r6 = T_r5 @ T(q[5], theta_offset[5], d[5], a[5], alpha[5])
-    T_rc1 = T_r6 @ T6_c1
-    T_rc2 = T_r6 @ T6_c2
-    T_rc3 = T_r6 @ T6_c3
-    T_rc4 = T_r6 @ T6_c4
 
-    T_l1 = T_base_left @ T(q[6], theta_offset[0], d[0], a[0], alpha[0])
-    T_l2 = T_l1 @ T(q[7], theta_offset[1], d[1], a[1], alpha[1])
-    T_l3 = T_l2 @ T(q[8], theta_offset[2], d[2], a[2], alpha[2])
-    T_l4 = T_l3 @ T(q[9], theta_offset[3], d[3], a[3], alpha[3])
-    T_l5 = T_l4 @ T(q[10], theta_offset[4], d[4], a[4], alpha[4])
-    T_l6 = T_l5 @ T(q[11], theta_offset[5], d[5], a[5], alpha[5])
-    T_lc1 = T_l6 @ T6_c1
-    T_lc2 = T_l6 @ T6_c2
-    T_lc3 = T_l6 @ T6_c3
-    T_lc4 = T_l6 @ T6_c4
+    T_l1 = T_base_left @ T(q[4], theta_offset[0], d[0], a[0], alpha[0])
+    T_l2 = T_l1 @ T(q[5], theta_offset[1], d[1], a[1], alpha[1])
+    T_l3 = T_l2 @ T(q[6], theta_offset[2], d[2], a[2], alpha[2])
+    T_l4 = T_l3 @ T(q[7], theta_offset[3], d[3], a[3], alpha[3])
 
-    p_feet_sym = ca.horzcat(T_rc1[0:3,3], T_rc2[0:3,3], T_rc3[0:3,3], T_rc4[0:3,3],
-        T_lc1[0:3,3], T_lc2[0:3,3], T_lc3[0:3,3], T_lc4[0:3,3])
+    p_feet_sym = ca.horzcat(T_r4[0:3,3], T_l4[0:3,3])
     forkin_feet = ca.Function('forkin_feet', [q], [p_feet_sym])
 
-    p_leg_sym = ca.horzcat(T_r1[0:3,3], T_r3[0:3,3], T_r6[0:3,3],
-        T_l1[0:3,3], T_l3[0:3,3], T_l6[0:3,3])
+    p_leg_sym = ca.horzcat(T_r1[0:3,3], T_r3[0:3,3], T_r4[0:3,3],
+        T_l1[0:3,3], T_l3[0:3,3], T_l4[0:3,3])
     forkin_leg = ca.Function('forkin_leg', [q], [p_leg_sym])
 
     return forkin_feet, forkin_leg
@@ -328,28 +292,16 @@ for i in range(2*N+1):
     p_i['r']  = r_i[:,None]
     p_i['r1'] = p_leg_i[:,0][:,None]
     p_i['r3'] = p_leg_i[:,1][:,None]
-    p_i['r6'] = p_leg_i[:,2][:,None]
+    p_i['r4'] = p_leg_i[:,2][:,None]
     p_i['l1'] = p_leg_i[:,3][:,None]
     p_i['l3'] = p_leg_i[:,4][:,None]
-    p_i['l6'] = p_leg_i[:,5][:,None]
+    p_i['l4'] = p_leg_i[:,5][:,None]
     p_i['rc1'] = p_feet_i[:,0][:,None]
-    p_i['rc2'] = p_feet_i[:,1][:,None]
-    p_i['rc3'] = p_feet_i[:,2][:,None]
-    p_i['rc4'] = p_feet_i[:,3][:,None]
-    p_i['lc1'] = p_feet_i[:,4][:,None]
-    p_i['lc2'] = p_feet_i[:,5][:,None]
-    p_i['lc3'] = p_feet_i[:,6][:,None]
-    p_i['lc4'] = p_feet_i[:,7][:,None]
+    p_i['lc1'] = p_feet_i[:,1][:,None]
 
     F_vec_i = {}
     F_vec_i['rc1'] = p_i['rc1'] + F_len * F_i[0:3][:,None]
-    F_vec_i['rc2'] = p_i['rc2'] + F_len * F_i[3:6][:,None]
-    F_vec_i['rc3'] = p_i['rc3'] + F_len * F_i[6:9][:,None]
-    F_vec_i['rc4'] = p_i['rc4'] + F_len * F_i[9:12][:,None]
-    F_vec_i['lc1'] = p_i['lc1'] + F_len * F_i[12:15][:,None]
-    F_vec_i['lc2'] = p_i['lc2'] + F_len * F_i[15:18][:,None]
-    F_vec_i['lc3'] = p_i['lc3'] + F_len * F_i[18:21][:,None]
-    F_vec_i['lc4'] = p_i['lc4'] + F_len * F_i[21:24][:,None]
+    F_vec_i['lc1'] = p_i['lc1'] + F_len * F_i[3:6][:,None]
 
     if i==0:
         p = p_i
@@ -362,47 +314,51 @@ for i in range(2*N+1):
 
 leg_r_coord = np.zeros((3, 3, 2*N+1)) #(cartesian space)*(# datapoints)*(# time points)
 leg_l_coord = np.zeros((3, 3, 2*N+1))
-foot_r_coord = np.zeros((3, 5, 2*N+1))
-foot_l_coord = np.zeros((3, 5, 2*N+1))
+#foot_r_coord = np.zeros((3, 5, 2*N+1))
+#foot_l_coord = np.zeros((3, 5, 2*N+1))
 torso_coord = np.zeros((3, 4, 2*N+1))
 F_coord = np.zeros((nj, 3, 2, 2*N+1)) #(# forces)*(cartesian space)*(# datapoints)*(# time points) 
 for xyz in range(3):
-    leg_r_coord[xyz,:,:] = np.array([p['r1'][xyz,:], p['r3'][xyz,:], p['r6'][xyz,:]])
-    leg_l_coord[xyz,:,:] = np.array([p['l1'][xyz,:], p['l3'][xyz,:], p['l6'][xyz,:]])
+    leg_r_coord[xyz,:,:] = np.array([p['r1'][xyz,:], p['r3'][xyz,:], p['r4'][xyz,:]])
+    leg_l_coord[xyz,:,:] = np.array([p['l1'][xyz,:], p['l3'][xyz,:], p['l4'][xyz,:]])
+    '''
     foot_r_coord[xyz,:,:] = np.array([p['rc1'][xyz,:], p['rc2'][xyz,:], 
         p['rc4'][xyz,:], p['rc3'][xyz,:], p['rc1'][xyz,:]])
     foot_l_coord[xyz,:,:] = np.array([p['lc1'][xyz,:], p['lc2'][xyz,:], 
         p['lc4'][xyz,:], p['lc3'][xyz,:], p['lc1'][xyz,:]])
+    '''
     torso_coord[xyz,:,:] = np.array([p['r'][xyz,:], p['r1'][xyz,:], 
         p['l1'][xyz,:], p['r'][xyz,:]])
-    for j, key in enumerate(['rc1', 'rc2', 'rc3', 'rc4', 'lc1', 'lc2', 'lc3', 'lc4']):
+    for j, key in enumerate(['rc1', 'lc1']):
         F_coord[j,xyz,:,:] = np.array([p[key][xyz,:], F_vec[key][xyz,:]])
 
 anim_fig = plt.figure(figsize=(12, 12))
 ax = Axes3D(anim_fig)
-lines = [plt.plot([], [])[0] for _ in range(6+nj)]
+lines = [plt.plot([], [])[0] for _ in range(4+nj)]
 
 def animate(i):
 
+    '''
     lines[0].set_data(foot_r_coord[0,:,i], foot_r_coord[1,:,i])
     lines[0].set_3d_properties(foot_r_coord[2,:,i])
     lines[1].set_data(foot_l_coord[0,:,i], foot_l_coord[1,:,i])
     lines[1].set_3d_properties(foot_l_coord[2,:,i])
+    '''
 
-    lines[2].set_data(leg_r_coord[0,:,i], leg_r_coord[1,:,i])
-    lines[2].set_3d_properties(leg_r_coord[2,:,i])
-    lines[3].set_data(leg_l_coord[0,:,i], leg_l_coord[1,:,i])
-    lines[3].set_3d_properties(leg_l_coord[2,:,i])
+    lines[0].set_data(leg_r_coord[0,:,i], leg_r_coord[1,:,i])
+    lines[0].set_3d_properties(leg_r_coord[2,:,i])
+    lines[1].set_data(leg_l_coord[0,:,i], leg_l_coord[1,:,i])
+    lines[1].set_3d_properties(leg_l_coord[2,:,i])
 
-    lines[4].set_data(torso_coord[0,:,i], torso_coord[1,:,i])
-    lines[4].set_3d_properties(torso_coord[2,:,i])
+    lines[2].set_data(torso_coord[0,:,i], torso_coord[1,:,i])
+    lines[2].set_3d_properties(torso_coord[2,:,i])
 
-    lines[5].set_data(r_des[0,i], r_des[1,i])
-    lines[5].set_3d_properties(r_des[2,i])
+    lines[3].set_data(r_des[0,i], r_des[1,i])
+    lines[3].set_3d_properties(r_des[2,i])
 
     for j in range(nj):
-        lines[6+j].set_data(F_coord[j,0,:,i], F_coord[j,1,:,i])
-        lines[6+j].set_3d_properties(F_coord[j,2,:,i])
+        lines[4+j].set_data(F_coord[j,0,:,i], F_coord[j,1,:,i])
+        lines[4+j].set_3d_properties(F_coord[j,2,:,i])
 
     ax.view_init(azim=i/2)
 
@@ -413,23 +369,25 @@ ax.set_xlim3d([-1, 1])
 ax.set_ylim3d([-1, 1])
 ax.set_zlim3d([0, 2])
 
+'''
 for line in lines[0:2]:
     line.set_color('g')
     line.set_linewidth(5)
     line.set_marker('o')
     line.set_markeredgewidth(7)
+'''
 
-for line in lines[2:5]:
+for line in lines[0:3]:
     line.set_color('b')
     line.set_linewidth(5)
     line.set_marker('o')
     line.set_markeredgewidth(7)
 
-lines[5].set_color('r')
-lines[5].set_marker('o')
-lines[5].set_markeredgewidth(7)
+lines[3].set_color('r')
+lines[3].set_marker('o')
+lines[3].set_markeredgewidth(7)
 
-for line in lines[6:]:
+for line in lines[4:]:
     line.set_color('r')
     line.set_linewidth(3)
 
@@ -441,7 +399,7 @@ anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1,
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('point_mass_yz_circular2' + '.mp4', writer=writer)
+anim.save('point_mass_point_foot_foot_squats' + '.mp4', writer=writer)
 '''
 
 plt.show()
