@@ -28,8 +28,11 @@ m = 10 # mass of torso
 g = np.array([0, 0, -9.81]) # gravitational acceleration
 mu = 0.7 #friciton coefficient
 
-N = 100 # number of hermite-simpson finite elements. Total # of points = 2*N+1
-tf = 20.0 # final time of interval
+Rs = np.eye(3) # surface frame
+ps = np.zeros((3,1)) # surface origin
+
+N = 10 # number of hermite-simpson finite elements. Total # of points = 2*N+1
+tf = 2.0 # final time of interval
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
 # "default" joint angle configuration
@@ -53,19 +56,21 @@ q_bounds = np.array([ \
     ])
 
 # objective cost weights
-Qr = np.array([1000, 1000, 1000])
+Qr = np.array([500, 500, 500])
 Qrd = np.array([1, 1, 1])
 Qqd = np.full((nq*2), 1)
+Qc = 0 # temp
 RF = np.full((nj3), 0.001)
 
 # desired torso pose trajectory
 r_des = np.array([ \
     np.full((2*N+1), 0),
-    #0.1* np.sin(2*t),
-    #np.full((2*N+1),1E-3),
-    0.1* np.cos(2*t),
-    #np.full((2*N+1),1.4)
-    1.2 + 0.29*np.sin(2*t)
+    #0.05* np.sin(2*t),
+    np.full((2*N+1),1E-3),
+    #0.05* np.cos(2*t),
+    #np.linspace(1E-3, 0.05, 2*N+1) + 0.06* np.cos(2*t),
+    np.full((2*N+1),1.4)
+    #1.2 + 0.29*np.sin(2*t)
     ])
 
 # generate torso pose and velocity trajectory
@@ -207,10 +212,15 @@ for i in range(2*N+1):
     for F_idx in range(nj3):
         J += RF[F_idx]*simp[0][i]*(UF[F_idx,i])**2
 
+    for c_idx in range(nj3):
+        cj_des = c_des.reshape(nj3, order='F')[c_idx]
+        J += Qc*simp[0][i]*(XC[c_idx,i]-cj_des)**2
+
 opti.minimize(J)
 
 # initial condition constraint
 opti.subject_to(XR[:,0] ==  xr_des[:,0])
+opti.subject_to(XC[:,0] ==  c_des.reshape(nj3, order='F'))
 
 for i in range(2*N+1):
     # point mass dynamics constraints imposed through Hermite-Simpson
@@ -252,7 +262,7 @@ for i in range(2*N+1):
     opti.subject_to(c_rel_i == forkin_feet(q_i))
 
     # fixed contact location constraint
-    opti.subject_to(c_i == c_des)
+    #opti.subject_to(c_i == c_des)
 
     # zero angular momentum constraint
     torque_i = ca.MX.zeros(3,nj)
@@ -260,6 +270,7 @@ for i in range(2*N+1):
         torque_i[:,j] = ca.cross(c_rel_i[:,j], F_i[:,j])
     opti.subject_to(ca.sum2(torque_i) == np.zeros((3,1)))
 
+    '''
     #friction cone constraint
     Fx_i = F_i[0,:]
     Fy_i = F_i[1,:]
@@ -267,6 +278,23 @@ for i in range(2*N+1):
     opti.subject_to(Fz_i >= np.zeros(Fz_i.shape))
     opti.subject_to(opti.bounded(-mu*Fz_i, Fx_i, mu*Fz_i))
     opti.subject_to(opti.bounded(-mu*Fz_i, Fy_i, mu*Fz_i))
+    '''
+
+    # foot positions and reaction forces and surface coordinates
+    Fs_i = Rs.T @ F_i
+    cs_i = Rs.T @ (c_i - ps)
+    cds_i = Rs.T @ (c_i - c_i_prev)
+
+    # friciton cone constraints in surface coordinates
+    opti.subject_to(Fs_i[2,:] >= np.zeros(Fs_i[2,:].shape))
+    opti.subject_to(opti.bounded(-mu*Fs_i[2,:], Fs_i[0,:], mu*Fs_i[2,:]))
+    opti.subject_to(opti.bounded(-mu*Fs_i[2,:], Fs_i[1,:], mu*Fs_i[2,:]))
+
+    # contact constraints in surface coordinates
+    opti.subject_to(cs_i[2,:] >= np.zeros(cs_i[2,:].shape))
+    opti.subject_to(cs_i[2,:] * Fs_i[2,:] == np.zeros(Fs_i[2,:].shape))
+    opti.subject_to(cds_i[0,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
+    opti.subject_to(cds_i[1,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
 
     #joint constraints
     opti.subject_to(opti.bounded(q_bounds[:,0], q_i, q_bounds[:,1]))
@@ -408,7 +436,7 @@ anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1,
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('point_mass_line_foot_foot_xy_circ' + '.mp4', writer=writer)
+anim.save('point_mass_line_foot_contact_yz_circ2' + '.mp4', writer=writer)
 '''
 
 plt.show()
