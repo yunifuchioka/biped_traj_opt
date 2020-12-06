@@ -3,6 +3,7 @@ from numpy import pi
 import casadi as ca
 
 from scipy.interpolate import CubicSpline
+from scipy.interpolate import interp1d
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -17,40 +18,45 @@ leg_len = np.array([0.5, 0.5]) # thigh and calf lengh respectively
 torso_size = np.array([0, 0.3, 0.5]) # x,y,z length of torso
 foot_size = np.array([0.2, 0, 0]) # x,y,z length of feet
 
-m = 10 # mass of torso
+m = 50 # mass of torso
 g = np.array([0, 0, -9.81]) # gravitational acceleration
-mu = 0.7 #friciton coefficient
+mu = 0.8 #friciton coefficient
 
 Rs = np.eye(3) # surface frame
 ps = np.zeros((3,1)) # surface origin
 
 tf = 20.0 # final time of interval
-N = int(tf*5) # number of hermite-simpson finite elements. Total # of points = 2*N+1
+N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2*N+1
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
 # objective cost weights
-Qr = np.array([1, 1, 0.1])
+Qr = np.array([1, 1, 1000])
 Qrd = np.array([1, 1, 1])
 Qc = np.full((nj3), 1000)
+Qcd = np.full((nj3), 10)
 RF = np.full((nj3), 0.0001)
 
-# footstep plan generation #############################################################
-footstep_plan_random = False
-# forward step length, width between footsteps, maximum height during step
-stride = np.array([0.2, torso_size[1], 0.2])
-T_step = 0.75 # step period
-num_steps = int(tf/T_step)
+# footstep planner parameters
+stride = np.array([0.3, torso_size[1], 0.1]) # forward step length, leg width, max foot height
+stride_std = np.array([0.0, 0.0, 0.0]) # random std dev of step x and y locations
+T_step = 0.6 # step period
+duty = 0.5 # duty cycle - proportion of gait where foot is on the ground
+
+# desired trajectory planning #############################################################
+num_steps = int(tf/T_step) # number of footsteps to take
+# matrix that specifies footsteps timing and locations
 footstep_plan = np.array([ \
     np.linspace(0, tf, num_steps), # time
-    np.hstack((np.zeros(2),
+    np.hstack((np.zeros(2), # x positions
         np.linspace(0.0, (num_steps-4)*stride[0], num_steps-4),
         np.full(2, (num_steps-4)*stride[0]),
         )),
-    np.array([-stride[1]/2 + stride[1]*(i%2) for i in range(num_steps)]) #y
+    np.array([-stride[1]/2 + stride[1]*(i%2) for i in range(num_steps)]) # y positions
     ])
 
-if footstep_plan_random:
-    footstep_plan[1] += np.random.normal(loc=0, scale=0.1,size=footstep_plan[1].shape) 
+# add random noise
+footstep_plan[1,2:-1] += np.random.normal(loc=0, scale=stride_std[0],size=max(footstep_plan[1].shape)-3)
+footstep_plan[2,2:-1] += np.random.normal(loc=0, scale=stride_std[1],size=max(footstep_plan[2].shape)-3)
 
 '''
 # plot 2D footstep plan
@@ -72,25 +78,81 @@ plt.show()
 import ipdb; ipdb.set_trace()
 '''
 
-footstep_plan_right= np.hstack(( \
-    footstep_plan[:,0::2],
-    np.array([tf, footstep_plan[:,0::2][:,-1][1] , footstep_plan[:,0::2][:,-1][2]])[:,None],
-    ))
-footstep_plan_left = np.hstack(( \
-    np.array([0, footstep_plan[1,1], footstep_plan[2,1]])[:,None],
-    footstep_plan[:,1::2]))
+# interpolations points for feet: rows are time, x, y, z
+right_traj_points = footstep_plan[:,footstep_plan[2,:]>=0]
+left_traj_points = footstep_plan[:,footstep_plan[2,:]<=0]
+right_traj_points = np.concatenate(( \
+    right_traj_points,
+    np.zeros(right_traj_points.shape[1])[None,:]
+    ),axis=0) 
+left_traj_points = np.concatenate(( \
+    left_traj_points,
+    np.zeros(left_traj_points.shape[1])[None,:]
+    ),axis=0)
 
-t_idx_right = np.digitize(t, bins=footstep_plan_right[0], right=True)
-t_idx_left = np.digitize(t, bins=footstep_plan_left[0], right=True)
+# add endpoints if they are missing
+if right_traj_points[0,0] != 0:
+    right_traj_points = np.concatenate(( \
+        np.insert(right_traj_points[1:,0], 0, 0)[:,None],
+        right_traj_points
+        ),axis=1)
+if left_traj_points[0,0] != 0:
+    left_traj_points = np.concatenate(( \
+        np.insert(left_traj_points[1:,0], 0, 0)[:,None],
+        left_traj_points
+        ),axis=1)
+if right_traj_points[0,-1] != tf:
+    right_traj_points = np.concatenate(( \
+        right_traj_points,
+        np.insert(right_traj_points[1:,-1], 0, tf)[:,None],
+        ),axis=1)
+if left_traj_points[0,-1] != tf:
+    left_traj_points = np.concatenate(( \
+        left_traj_points,
+        np.insert(left_traj_points[1:,-1], 0, tf)[:,None],
+        ),axis=1)
 
-foot_traj = np.array([ \
-    footstep_plan_right[1,t_idx_right],
-    footstep_plan_right[2,t_idx_right],
-    np.zeros(t.shape),
-    footstep_plan_left[1,t_idx_left],
-    footstep_plan_left[2,t_idx_left],
-    np.zeros(t.shape)
-    ])
+# specify when foot liftoff should occur
+right_liftoff_time = right_traj_points[0,:-1]*(1-duty)+right_traj_points[0,1:]*duty
+left_liftoff_time = left_traj_points[0,:-1]*(1-duty)+left_traj_points[0,1:]*duty
+
+# specify interpolation points corresponding to foot liftoff
+right_liftoff_points = np.concatenate(( \
+        right_liftoff_time[None,:],
+        right_traj_points[1:,:-1]
+        ),axis=0)
+left_liftoff_points = np.concatenate(( \
+        left_liftoff_time[None,:],
+        left_traj_points[1:,:-1]
+        ),axis=0)
+
+# specify interpolation points corresponding to swing foot midpoint to specify foot height
+right_swing_points = np.concatenate(( \
+        (right_liftoff_time[1:-1] + right_traj_points[0,2:-1])[None,:]/2,
+        (right_traj_points[1:3,2:-1] + right_traj_points[1:3,1:-2])/2,
+        np.full(max(right_liftoff_time.shape)-2, stride[2])[None,:]
+        ),axis=0)
+left_swing_points = np.concatenate(( \
+        (left_liftoff_time[1:-1] + left_traj_points[0,2:-1])[None,:]/2,
+        (left_traj_points[1:3,2:-1] + left_traj_points[1:3,1:-2])/2,
+        np.full(max(left_liftoff_time.shape)-2, stride[2])[None,:]
+        ),axis=0)
+
+# construct foot trajectory interpolator function
+right_traj_points = np.concatenate(( \
+    right_traj_points, right_liftoff_points, right_swing_points), axis=1)
+left_traj_points = np.concatenate(( \
+    left_traj_points, left_liftoff_points, left_swing_points), axis=1)
+right_traj_points = right_traj_points[:, right_traj_points[0].argsort()]
+left_traj_points = left_traj_points[:, left_traj_points[0].argsort()]
+right_interp = interp1d(right_traj_points[0], right_traj_points[1:])
+left_interp = interp1d(left_traj_points[0], left_traj_points[1:])
+
+# desired foot trajectory
+foot_traj = np.concatenate(( \
+    right_interp(t),
+    left_interp(t),
+    ),axis=0)
 
 # desired torso pose trajectory
 r_traj = np.array([ \
@@ -101,13 +163,13 @@ r_traj = np.array([ \
 
 # desired foot location
 c_des = np.array([ \
-    foot_traj[0] + foot_size[0]/2,
+    foot_traj[0] +foot_size[0]/2,
     foot_traj[1],
     foot_traj[2],
     foot_traj[0] -foot_size[0]/2,
     foot_traj[1],
     foot_traj[2],
-    foot_traj[3] + foot_size[0]/2,
+    foot_traj[3] +foot_size[0]/2,
     foot_traj[4],
     foot_traj[5],
     foot_traj[3] -foot_size[0]/2,
@@ -115,13 +177,13 @@ c_des = np.array([ \
     foot_traj[5]
     ])
 
-# generate torso pose and velocity trajectory
+# torso pose and velocity trajectory
 spline = CubicSpline(t, r_traj, axis=1)
 xr_des = np.vstack((spline(t), spline(t,1)))
 
-F_des = np.tile(-m*g/4, (2*N+1, 4)).T
-
-# function derivations
+# guess contact force trajectory
+F_des = np.tile(-m*g/4, (2*N+1, 4)).T # Fx=Fy=0, Fz=(torso mass)/(# contact points) 
+F_des[2::3,:][c_des[2::3,:]!=0] = 0 # set Fz=0 when c_des not in contact with ground
 
 # derive dynamic equation of motion
 def derive_dynamics():
@@ -138,7 +200,7 @@ def derive_dynamics():
  
 f = derive_dynamics()
 
-# trajectory optimization
+# trajectory optimization #############################################################
 opti = ca.Opti()
 
 # decision variables
@@ -161,6 +223,8 @@ for i in range(2*N+1):
 
     for c_idx in range(nj3):
         J += Qc[c_idx]*simp[0][i]*(XC[c_idx,i]-c_des[c_idx,i])**2
+        if i != 0:
+            J += Qcd[c_idx]*simp[0][i]*(c_des[c_idx,i]-c_des[c_idx,i-1])**2
 
     for F_idx in range(nj3):
         J += RF[F_idx]*simp[0][i]*(UF[F_idx,i])**2
@@ -221,8 +285,9 @@ for i in range(2*N+1):
     # contact constraints in surface coordinates
     opti.subject_to(cs_i[2,:] >= np.zeros(cs_i[2,:].shape))
     opti.subject_to(cs_i[2,:] * Fs_i[2,:] == np.zeros(Fs_i[2,:].shape))
-    opti.subject_to(cds_i[0,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
-    opti.subject_to(cds_i[1,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
+    if i != 0:
+        opti.subject_to(cds_i[0,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
+        opti.subject_to(cds_i[1,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
 
 # initial guess for decision variables
 XR_guess = xr_des
@@ -246,7 +311,7 @@ UF_sol = np.array(sol.value(UF))
 
 # animate
 axis_lim = 1.5
-F_len = 0.02
+F_len = 1/np.max(UF_sol)
 
 for i in range(2*N+1):
     r_i = np.array(XR_sol[:nr,i])
@@ -354,7 +419,7 @@ anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1,
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('point_mass_walk1' + '.mp4', writer=writer)
+anim.save('point_mass_run_random2' + '.mp4', writer=writer)
 '''
 
 plt.show()
