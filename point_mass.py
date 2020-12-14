@@ -58,29 +58,9 @@ footstep_plan = np.array([ \
 footstep_plan[1,2:-1] += np.random.normal(loc=0, scale=stride_std[0],size=max(footstep_plan[1].shape)-3)
 footstep_plan[2,2:-1] += np.random.normal(loc=0, scale=stride_std[1],size=max(footstep_plan[2].shape)-3)
 
-'''
-# plot 2D footstep plan
-plt.figure()
-ax = plt.gca()
-for i in range(footstep_plan.shape[1]):
-    rect_x_points = np.array([ \
-        footstep_plan[1,i]-foot_size[0]/2,
-        footstep_plan[1,i]+foot_size[0]/2,
-        ])
-    rect_y_points = np.array([ \
-        footstep_plan[2,i]-foot_size[1]/2,
-        footstep_plan[2,i]-foot_size[1]/2
-        ])
-    plt.plot(rect_x_points, rect_y_points, 'r')
-ax.axis('equal')
-ax.set_title('Footstep plan')
-plt.show()
-import ipdb; ipdb.set_trace()
-'''
-
 # interpolations points for feet: rows are time, x, y, z
-right_traj_points = footstep_plan[:,footstep_plan[2,:]>=0]
-left_traj_points = footstep_plan[:,footstep_plan[2,:]<=0]
+right_traj_points = footstep_plan[:,footstep_plan[2,:]<=0]
+left_traj_points = footstep_plan[:,footstep_plan[2,:]>=0]
 right_traj_points = np.concatenate(( \
     right_traj_points,
     np.zeros(right_traj_points.shape[1])[None,:]
