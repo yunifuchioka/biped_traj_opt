@@ -30,7 +30,7 @@ N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
 # objective cost weights
-Qr = np.array([1, 1, 1000])
+Qr = np.array([1, 1, 500])
 Qrd = np.array([1, 1, 1])
 Qc = np.full((nj3), 1000)
 Qcd = np.full((nj3), 10)
@@ -289,17 +289,161 @@ XR_sol = np.array(sol.value(XR))[:nr,:]
 XC_sol = np.array(sol.value(XC))
 UF_sol = np.array(sol.value(UF))
 
-# animate
+# inverse kinematics ###################################################################
+
+nq = 10 # dimension of joint configuration vector
+
+# Denavit Hartenberg parameters for a leg
+theta_offset =  np.array([0.0, -pi/2, 0.0, 0.0, 0.0])
+d = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+a = np.array([0.0, 0.0, leg_len[0], leg_len[1], 0.0])
+alpha = np.array([-pi/2, -pi/2, 0.0, 0.0, 0.0])
+
+# "default" joint angle configuration
+q_guess = np.array([ \
+    0, 0, -0.05, 0.1, -0.05,
+    0, 0, -0.05, 0.1, -0.05
+    ])
+
+# joint angle limits
+q_bounds = np.array([ \
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([1E-6, pi]),
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([-pi, pi]),
+    np.array([1E-6, pi]),
+    np.array([-pi, pi])
+    ])
+
+# cartesian basis vectors
+i0 = np.array([1.0, 0.0, 0.0])[:,None]
+j0 = np.array([0.0, 1.0, 0.0])[:,None]
+k0 = np.array([0.0, 0.0, 1.0])[:,None]
+
+# derive functions for rotation matrices and homogeneous transformation matrices
+def derive_coord_trans():
+    s = ca.SX.sym('s', 3)
+    th = ca.SX.sym('th')
+    th_offset = ca.SX.sym('th_offset')
+    d = ca.SX.sym('d')
+    a = ca.SX.sym('a')
+    alpha = ca.SX.sym('alpha')
+
+    # cross product matrix
+    skew_sym = ca.SX(np.array([ \
+            [0, -s[2], s[1]],
+            [s[2], 0, -s[0]],
+            [-s[1], s[0], 0]
+        ]))
+
+    # rotation matrix using Rodrigues' rotation formula
+    R_sym = ca.SX.eye(3) + ca.sin(th)*skew_sym + (1-ca.cos(th))*skew_sym@skew_sym
+    R = ca.Function('R', [th, s], [R_sym])
+
+    # homogeneous transformation matrix
+    T_sym = ca.vertcat( \
+        ca.horzcat(R(th+th_offset,k0)@R(alpha,i0), R(th+th_offset,k0)@(a*i0) + d*k0),
+        np.array([0.0, 0.0, 0.0, 1.0])[None,:]
+        )
+    T = ca.Function('T', [th, th_offset, d, a, alpha], [T_sym])
+
+    return R, T
+
+# derive forward kinematics for biped
+def derive_forkin():
+    q = ca.SX.sym('q', nq)
+
+    T_base_right = T(pi/2, 0, -torso_size[2], -torso_size[1]/2, pi)
+    T_base_left = T(pi/2, 0, -torso_size[2], torso_size[1]/2, pi)
+    T5_c1 = np.array([ \
+        [0, 0, -1, 0],
+        [-1, 0, 0, -foot_size[0]/2],
+        [0, 1, 0, 0],   
+        [0, 0, 0, 1]
+        ])
+    T5_c2 = np.array([ \
+        [0, 0, -1, 0],
+        [-1, 0, 0, foot_size[0]/2],
+        [0, 1, 0, 0],   
+        [0, 0, 0, 1]
+        ])
+
+    T_r1 = T_base_right @ T(q[0], theta_offset[0], d[0], a[0], alpha[0])
+    T_r2 = T_r1 @ T(q[1], theta_offset[1], d[1], a[1], alpha[1])
+    T_r3 = T_r2 @ T(q[2], theta_offset[2], d[2], a[2], alpha[2])
+    T_r4 = T_r3 @ T(q[3], theta_offset[3], d[3], a[3], alpha[3])
+    T_r5 = T_r4 @ T(q[4], theta_offset[4], d[4], a[4], alpha[4])
+
+    T_rc1 = T_r5 @ T5_c1
+    T_rc2 = T_r5 @ T5_c2
+
+    T_l1 = T_base_left @ T(q[5], theta_offset[0], d[0], a[0], alpha[0])
+    T_l2 = T_l1 @ T(q[6], theta_offset[1], d[1], a[1], alpha[1])
+    T_l3 = T_l2 @ T(q[7], theta_offset[2], d[2], a[2], alpha[2])
+    T_l4 = T_l3 @ T(q[8], theta_offset[3], d[3], a[3], alpha[3])
+    T_l5 = T_l4 @ T(q[9], theta_offset[4], d[4], a[4], alpha[4])
+
+    T_lc1 = T_l5 @ T5_c1
+    T_lc2 = T_l5 @ T5_c2
+
+    p_feet_sym = ca.horzcat(T_rc1[0:3,3], T_rc2[0:3,3], T_lc1[0:3,3], T_lc2[0:3,3],)
+    forkin_feet = ca.Function('forkin_feet', [q], [p_feet_sym])
+
+    p_leg_sym = ca.horzcat(T_r1[0:3,3], T_r3[0:3,3], T_r4[0:3,3],
+        T_l1[0:3,3], T_l3[0:3,3], T_l4[0:3,3])
+    forkin_leg = ca.Function('forkin_leg', [q], [p_leg_sym])
+
+    return forkin_feet, forkin_leg
+
+_, T = derive_coord_trans()
+forkin_feet, forkin_leg = derive_forkin()
+
+opti_kin = ca.Opti()
+XQ = opti_kin.variable(nq, 2*N+1)
+
+J = 0
+for i in range(2*N+1):
+    c0_des = XC_sol[:,i] - np.tile(XR_sol[:,i], (1,4))
+    c0_actual = ca.reshape(forkin_feet(XQ[:,i]),1,12)
+    J += 10*ca.dot(c0_des-c0_actual,c0_des-c0_actual)
+
+    opti_kin.subject_to(opti_kin.bounded(q_bounds[:,0], XQ[:,i], q_bounds[:,1]))
+
+opti_kin.minimize(J)
+
+opti_kin.set_initial(XQ, np.tile(q_guess[:,None], 2*N+1))
+
+# solve NLP
+p_opts = {}
+s_opts = {'print_level': 5}
+opti_kin.solver('ipopt', p_opts, s_opts)
+sol = opti_kin.solve()
+
+# extract NLP output as numpy array
+XQ_sol = np.array(sol.value(XQ))
+
+# animate ##############################################################################
 axis_lim = 1.5
 F_len = 1/np.max(UF_sol)
 
 for i in range(2*N+1):
     r_i = np.array(XR_sol[:nr,i])
     p_feet_i = XC_sol[:,i].reshape((3,nj), order='F')
+    p_leg_i = np.array(r_i + forkin_leg(XQ_sol[:,i]))
     F_i = np.array(UF_sol[:,i])
 
     p_i = {}
     p_i['r']  = r_i[:,None]
+    p_i['r1'] = p_leg_i[:,0][:,None]
+    p_i['r3'] = p_leg_i[:,1][:,None]
+    p_i['r4'] = p_leg_i[:,2][:,None]
+    p_i['l1'] = p_leg_i[:,3][:,None]
+    p_i['l3'] = p_leg_i[:,4][:,None]
+    p_i['l4'] = p_leg_i[:,5][:,None]
     p_i['rc1'] = p_feet_i[:,0][:,None]
     p_i['rc2'] = p_feet_i[:,1][:,None]
     p_i['lc1'] = p_feet_i[:,2][:,None]
@@ -320,20 +464,25 @@ for i in range(2*N+1):
         for k, v in F_vec_i.items():
             F_vec[k] = np.hstack((F_vec[k], v))
 
+leg_r_coord = np.zeros((3, 3, 2*N+1)) #(cartesian space)*(# datapoints)*(# time points)
+leg_l_coord = np.zeros((3, 3, 2*N+1))
 foot_r_coord = np.zeros((3, 2, 2*N+1))
 foot_l_coord = np.zeros((3, 2, 2*N+1))
-torso_coord = np.zeros((3, 1, 2*N+1))
+torso_coord = np.zeros((3, 4, 2*N+1))
 F_coord = np.zeros((nj, 3, 2, 2*N+1)) #(# forces)*(cartesian space)*(# datapoints)*(# time points) 
 for xyz in range(3):
+    leg_r_coord[xyz,:,:] = np.array([p['r1'][xyz,:], p['r3'][xyz,:], p['r4'][xyz,:]])
+    leg_l_coord[xyz,:,:] = np.array([p['l1'][xyz,:], p['l3'][xyz,:], p['l4'][xyz,:]])
     foot_r_coord[xyz,:,:] = np.array([p['rc1'][xyz,:], p['rc2'][xyz,:]])
     foot_l_coord[xyz,:,:] = np.array([p['lc1'][xyz,:], p['lc2'][xyz,:]])
-    torso_coord[xyz,:,:] = np.array([p['r'][xyz,:]])
+    torso_coord[xyz,:,:] = np.array([p['r'][xyz,:], p['r1'][xyz,:], 
+        p['l1'][xyz,:], p['r'][xyz,:]])
     for j, key in enumerate(['rc1', 'rc2', 'lc1', 'lc2']):
         F_coord[j,xyz,:,:] = np.array([p[key][xyz,:], F_vec[key][xyz,:]])
 
 anim_fig = plt.figure(figsize=(12, 12))
 ax = Axes3D(anim_fig)
-lines = [plt.plot([], [])[0] for _ in range(4+2*nj)]
+lines = [plt.plot([], [])[0] for _ in range(6+2*nj)]
 
 def animate(i):
     for j in range(nj):
@@ -347,18 +496,22 @@ def animate(i):
     lines[nj+1].set_3d_properties(foot_r_coord[2,:,i])
     lines[nj+2].set_data(foot_l_coord[0,:,i], foot_l_coord[1,:,i])
     lines[nj+2].set_3d_properties(foot_l_coord[2,:,i])
-
+    
     lines[nj+3].set_data(torso_coord[0,:,i], torso_coord[1,:,i])
     lines[nj+3].set_3d_properties(torso_coord[2,:,i])
 
+    lines[nj+4].set_data(leg_r_coord[0,:,i], leg_r_coord[1,:,i])
+    lines[nj+4].set_3d_properties(leg_r_coord[2,:,i])
+    lines[nj+5].set_data(leg_l_coord[0,:,i], leg_l_coord[1,:,i])
+    lines[nj+5].set_3d_properties(leg_l_coord[2,:,i])
+    
     for j in range(nj):
-        lines[nj+4+j].set_data(F_coord[j,0,:,i], F_coord[j,1,:,i])
-        lines[nj+4+j].set_3d_properties(F_coord[j,2,:,i])
+        lines[nj+6+j].set_data(F_coord[j,0,:,i], F_coord[j,1,:,i])
+        lines[nj+6+j].set_3d_properties(F_coord[j,2,:,i])
 
     ax.view_init(azim=i/2)
-    ax.set_xlim3d([torso_coord[0,:,i]-1, torso_coord[0,:,i]+1])
-    ax.set_ylim3d([torso_coord[1,:,i]-1, torso_coord[1,:,i]+1])
-
+    ax.set_xlim3d([torso_coord[0,1,i]-1, torso_coord[0,1,i]+1])
+    ax.set_ylim3d([torso_coord[1,1,i]-1, torso_coord[1,1,i]+1])
 
     return lines
 
@@ -382,12 +535,13 @@ for line in lines[nj+1:nj+3]:
     line.set_marker('o')
     line.set_markeredgewidth(7)
 
-lines[nj+3].set_color('b')
-lines[nj+3].set_linewidth(5)
-lines[nj+3].set_marker('o')
-lines[nj+3].set_markeredgewidth(7)
+for line in lines[nj+3:nj+6]:
+    line.set_color('b')
+    line.set_linewidth(5)
+    line.set_marker('o')
+    line.set_markeredgewidth(7)
 
-for line in lines[nj+4:]:
+for line in lines[nj+6:]:
     line.set_color('r')
     line.set_linewidth(3)
 
