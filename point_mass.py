@@ -30,7 +30,7 @@ N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
 # objective cost weights
-Qr = np.array([1, 1, 500])
+Qr = np.array([1, 1, 1000])
 Qrd = np.array([1, 1, 1])
 Qc = np.full((nj3), 1000)
 Qcd = np.full((nj3), 10)
@@ -138,7 +138,7 @@ foot_traj = np.concatenate(( \
 r_traj = np.array([ \
     np.mean(np.vstack((foot_traj[0],foot_traj[3])), axis=0),
     np.mean(np.vstack((foot_traj[1],foot_traj[4])), axis=0),
-    np.full((2*N+1),1.4)
+    np.full((2*N+1),1.47)
     ])
 
 # desired foot location
@@ -268,6 +268,12 @@ for i in range(2*N+1):
     if i != 0:
         opti.subject_to(cds_i[0,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
         opti.subject_to(cds_i[1,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
+
+    # joint constraint planar approximation
+    opti.subject_to(c_rel_i[0,0]-foot_size[0]/2-c_rel_i[2,0] <= 1.5)
+    opti.subject_to(c_rel_i[0,2]-foot_size[0]/2-c_rel_i[2,2] <= 1.5)
+    opti.subject_to(-c_rel_i[0,0]+foot_size[0]/2-c_rel_i[2,0] <= 1.5)
+    opti.subject_to(-c_rel_i[0,2]+foot_size[0]/2-c_rel_i[2,2] <= 1.5)
 
 # initial guess for decision variables
 XR_guess = xr_des
@@ -553,7 +559,7 @@ anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1,
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('point_mass_run_random2' + '.mp4', writer=writer)
+anim.save('point_mass_kin_constraintOn' + '.mp4', writer=writer)
 '''
 
 plt.show()
