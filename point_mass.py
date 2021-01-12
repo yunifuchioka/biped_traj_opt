@@ -4,11 +4,14 @@ import casadi as ca
 
 from scipy.interpolate import CubicSpline
 from scipy.interpolate import interp1d
+from scipy.spatial.transform import Rotation
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.animation as animation
 plt.style.use('seaborn')
+
+TOL = 1E-12 # value under which a number is considered to be zero
 
 nr = 3 # dimension of centroid configuration vector
 nj = 4 # number of contact points
@@ -22,10 +25,16 @@ m = 50 # mass of torso
 g = np.array([0, 0, -9.81]) # gravitational acceleration
 mu = 0.8 #friciton coefficient
 
-Rs = np.eye(3) # surface frame
-ps = np.zeros((3,1)) # surface origin
+Rs_r = np.eye(3)
+#Rs_r = Rotation.from_rotvec(37*pi/180 * np.array([0, 1, 0])).as_matrix()
+ps_r = np.zeros((3,1))
 
-tf = 20.0 # final time of interval
+Rs_l = Rs_r
+#Rs_l = Rotation.from_rotvec(10*pi/180 * np.array([0, 1, 0])).as_matrix()
+ps_l = ps_r
+#ps_l = np.array([0, 0, 0.3])[:,None]
+
+tf = 20 # final time of interval
 N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2*N+1
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
@@ -63,11 +72,13 @@ right_traj_points = footstep_plan[:,footstep_plan[2,:]<=0]
 left_traj_points = footstep_plan[:,footstep_plan[2,:]>=0]
 right_traj_points = np.concatenate(( \
     right_traj_points,
-    np.zeros(right_traj_points.shape[1])[None,:]
+    (ps_r[2]-Rs_r[0,2]/Rs_r[2,2]*(right_traj_points[1,:]-ps_r[0])
+        -Rs_r[1,2]/Rs_r[2,2]*(right_traj_points[2,:]-ps_r[1]))[None,:]
     ),axis=0) 
 left_traj_points = np.concatenate(( \
     left_traj_points,
-    np.zeros(left_traj_points.shape[1])[None,:]
+    (ps_l[2]-Rs_l[0,2]/Rs_l[2,2]*(left_traj_points[1,:]-ps_l[0])
+        -Rs_l[1,2]/Rs_l[2,2]*(left_traj_points[2,:]-ps_l[1]))[None,:]
     ),axis=0)
 
 # add endpoints if they are missing
@@ -110,14 +121,13 @@ left_liftoff_points = np.concatenate(( \
 right_swing_points = np.concatenate(( \
         (right_liftoff_time[1:-1] + right_traj_points[0,2:-1])[None,:]/2,
         (right_traj_points[1:3,2:-1] + right_traj_points[1:3,1:-2])/2,
-        np.full(max(right_liftoff_time.shape)-2, stride[2])[None,:]
+        (right_traj_points[3,2:-1] + right_traj_points[3,1:-2])[None,:]/2 + stride[2]
         ),axis=0)
 left_swing_points = np.concatenate(( \
         (left_liftoff_time[1:-1] + left_traj_points[0,2:-1])[None,:]/2,
         (left_traj_points[1:3,2:-1] + left_traj_points[1:3,1:-2])/2,
-        np.full(max(left_liftoff_time.shape)-2, stride[2])[None,:]
+        (left_traj_points[3,2:-1] + left_traj_points[3,1:-2])[None,:]/2 + stride[2]
         ),axis=0)
-
 # construct foot trajectory interpolator function
 right_traj_points = np.concatenate(( \
     right_traj_points, right_liftoff_points, right_swing_points), axis=1)
@@ -138,32 +148,27 @@ foot_traj = np.concatenate(( \
 r_traj = np.array([ \
     np.mean(np.vstack((foot_traj[0],foot_traj[3])), axis=0),
     np.mean(np.vstack((foot_traj[1],foot_traj[4])), axis=0),
-    np.full((2*N+1),1.47)
+    np.min(np.vstack((foot_traj[2],foot_traj[5])), axis=0) + 1.45
     ])
-
 # desired foot location
-c_des = np.array([ \
-    foot_traj[0] +foot_size[0]/2,
-    foot_traj[1],
-    foot_traj[2],
-    foot_traj[0] -foot_size[0]/2,
-    foot_traj[1],
-    foot_traj[2],
-    foot_traj[3] +foot_size[0]/2,
-    foot_traj[4],
-    foot_traj[5],
-    foot_traj[3] -foot_size[0]/2,
-    foot_traj[4],
-    foot_traj[5]
-    ])
+c_des = np.vstack((foot_traj[:3], foot_traj[:3], foot_traj[3:], foot_traj[3:])) \
+    + np.hstack((Rs_r@foot_size/2, Rs_r@-foot_size/2,
+        Rs_l@foot_size/2, Rs_l@-foot_size/2))[:,None]
 
 # torso pose and velocity trajectory
 spline = CubicSpline(t, r_traj, axis=1)
 xr_des = np.vstack((spline(t), spline(t,1)))
 
 # guess contact force trajectory
-F_des = np.tile(-m*g/4, (2*N+1, 4)).T # Fx=Fy=0, Fz=(torso mass)/(# contact points) 
-F_des[2::3,:][c_des[2::3,:]!=0] = 0 # set Fz=0 when c_des not in contact with ground
+# initialize as Fx=Fy=0, Fz=(torso mass)/(# contact points) 
+F_des = np.tile(-m*g/4, (2*N+1, nj)).T
+# desired contact point distances from ground surface origin (in global frame)
+c_des_rel = c_des - np.vstack((ps_r, ps_r, ps_l, ps_l))
+# normal distance from ground surface for each time
+c_normal_dist = np.vstack((Rs_r.T[2,:] @ c_des_rel[0:3,:], Rs_r.T[2,:] @ c_des_rel[3:6,:],
+    Rs_l.T[2,:] @ c_des_rel[6:9,:], Rs_l.T[2,:] @ c_des_rel[9:12,:]))
+# set Fz=0 when c_des not in contact with ground
+F_des[2::3,:][np.abs(c_normal_dist)>=TOL] = 0
 
 # derive dynamic equation of motion
 def derive_dynamics():
@@ -249,13 +254,19 @@ for i in range(2*N+1):
     opti.subject_to(ca.sum2(torque_i) == np.zeros((3,1)))
 
     # foot size and orientation constraint
-    opti.subject_to(c_i[:,0] - c_i[:,1] == foot_size)
-    opti.subject_to(c_i[:,2] - c_i[:,3] == foot_size)
+    # TODO: ignore terrain rotations in z axis
+    opti.subject_to(c_i[:,0] - c_i[:,1] == Rs_r @ foot_size)
+    opti.subject_to(c_i[:,2] - c_i[:,3] == Rs_l @ foot_size)
 
     # foot positions and reaction forces and surface coordinates
-    Fs_i = Rs.T @ F_i
-    cs_i = Rs.T @ (c_i - ps)
-    cds_i = Rs.T @ (c_i - c_i_prev)
+    idx_rl = int(nj/2) # index representing switch between right and left feet
+    # ground reaction forces in ground surface frame
+    Fs_i = ca.horzcat(Rs_r.T @ F_i[:,:idx_rl], Rs_l.T @ F_i[:,idx_rl:])
+    # foot locations in ground surface frame
+    cs_i = ca.horzcat(Rs_r.T @ (c_i[:,:idx_rl] - ps_r), Rs_l.T @ (c_i[:,idx_rl:] - ps_l))
+    # foot velocities in ground surface frame
+    cds_i = ca.horzcat(Rs_r.T @ (c_i[:,:idx_rl] - c_i_prev[:,:idx_rl]),
+        Rs_l.T @ (c_i[:,idx_rl:] - c_i_prev[:,idx_rl:]))
 
     # friciton cone constraints in surface coordinates
     opti.subject_to(Fs_i[2,:] >= np.zeros(Fs_i[2,:].shape))
@@ -264,16 +275,18 @@ for i in range(2*N+1):
 
     # contact constraints in surface coordinates
     opti.subject_to(cs_i[2,:] >= np.zeros(cs_i[2,:].shape))
-    opti.subject_to(cs_i[2,:] * Fs_i[2,:] == np.zeros(Fs_i[2,:].shape))
+    opti.subject_to(opti.bounded(-TOL, cs_i[2,:] * Fs_i[2,:], TOL))
     if i != 0:
-        opti.subject_to(cds_i[0,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
-        opti.subject_to(cds_i[1,:] * Fs_i[2, :] == np.zeros(Fs_i[2, :].shape))
+        opti.subject_to(opti.bounded(-TOL, cds_i[0,:] * Fs_i[2, :], TOL))
+        opti.subject_to(opti.bounded(-TOL, cds_i[1,:] * Fs_i[2, :], TOL))
 
     # joint constraint planar approximation
+    '''
     opti.subject_to(c_rel_i[0,0]-foot_size[0]/2-c_rel_i[2,0] <= 1.5)
     opti.subject_to(c_rel_i[0,2]-foot_size[0]/2-c_rel_i[2,2] <= 1.5)
     opti.subject_to(-c_rel_i[0,0]+foot_size[0]/2-c_rel_i[2,0] <= 1.5)
     opti.subject_to(-c_rel_i[0,2]+foot_size[0]/2-c_rel_i[2,2] <= 1.5)
+    '''
 
 # initial guess for decision variables
 XR_guess = xr_des
@@ -515,16 +528,19 @@ def animate(i):
         lines[nj+6+j].set_data(F_coord[j,0,:,i], F_coord[j,1,:,i])
         lines[nj+6+j].set_3d_properties(F_coord[j,2,:,i])
 
-    ax.view_init(azim=i/2)
+    ax.view_init(elev=0, azim=i)
     ax.set_xlim3d([torso_coord[0,1,i]-1, torso_coord[0,1,i]+1])
     ax.set_ylim3d([torso_coord[1,1,i]-1, torso_coord[1,1,i]+1])
 
     return lines
 
-#ax.view_init(azim=45)
-#ax.set_xlim3d([-1, 1])
-#ax.set_ylim3d([-1, 1])
 ax.set_zlim3d([0, 2])
+#ax.view_init(elev=0, azim=90)
+#fig_scale = 1.5
+#fig_shift = np.array([1.5, 1.5, -1.5])
+#ax.set_xlim3d([fig_shift[0]-fig_scale, fig_shift[0]+fig_scale])
+#ax.set_ylim3d([fig_shift[1]-fig_scale, fig_shift[1]+fig_scale])
+#ax.set_zlim3d([fig_shift[2]-fig_scale, fig_shift[2]+fig_scale])
 
 for line in lines[:nj]:
     line.set_color('c')
@@ -559,7 +575,7 @@ anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1,
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('point_mass_kin_constraintOn' + '.mp4', writer=writer)
+anim.save('point_mass_diff_foot_angle' + '.mp4', writer=writer)
 '''
 
 plt.show()
