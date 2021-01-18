@@ -209,7 +209,7 @@ for i in range(2*N+1):
     for c_idx in range(nj3):
         J += Qc[c_idx]*simp[0][i]*(XC[c_idx,i]-c_des[c_idx,i])**2
         if i != 0:
-            J += Qcd[c_idx]*simp[0][i]*(c_des[c_idx,i]-c_des[c_idx,i-1])**2
+            J += Qcd[c_idx]*simp[0][i]*(XC[c_idx,i]-XC[c_idx,i-1])**2
 
     for F_idx in range(nj3):
         J += RF[F_idx]*simp[0][i]*(UF[F_idx,i])**2
