@@ -24,7 +24,7 @@ I = 5 # moment of inertia of torso
 g = np.array([0, -9.81]) # gravitational acceleration
 mu = 0.8 #friciton coefficient
 
-tf = 10 # final time of interval
+tf = 7 # final time of interval
 N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2*N+1
 t = np.linspace(0,tf, 2*N+1) # discretized time
 
@@ -40,7 +40,7 @@ from scipy.signal import square
 r_traj = np.array([ \
     #np.repeat(0, 2*N+1),
     #0.5*-np.sin(2*t),
-    0.5*-square(2*t),
+    0.2*-square(2*t),
     np.repeat(1, 2*N+1),
     #1.2 + 0.2*np.sin(2*t)
     ])
@@ -289,5 +289,12 @@ for line in lines[1+nj:1+2*nj]:
 # create animation
 anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1, 
     interval=tf*1000/(2*N+1), repeat=True, blit=False)
+
+'''
+# uncomment to write to file
+Writer = animation.writers['ffmpeg']
+writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
+anim.save('potato_test_2D_angleOnly' + '.mp4', writer=writer)
+'''
 
 plt.show()
