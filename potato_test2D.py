@@ -91,13 +91,13 @@ def derive_dynamics():
     torque_net = ca.SX.zeros(1)
     for j in range(nj):
         #torque_net += ca.cross(xc[j*ndim:j*ndim+ndim], uF[j*ndim:j*ndim+ndim])
-        torque_net += xc[j*ndim]*uF[j*ndim+1] - xc[j*ndim+1]*uF[j*ndim]
+        torque_net += (xc[j*ndim]-xr[0])*uF[j*ndim+1] - (xc[j*ndim+1]-xr[1])*uF[j*ndim]
 
     fr_sym = ca.vertcat(xr[nr:], rddot)
     fr = ca.Function('fr', [xr,uF], [fr_sym])
 
     fth_sym = ca.vertcat(xth[nth:]/I, torque_net)
-    fth = ca.Function('fth', [xth,xc,uF], [fth_sym])
+    fth = ca.Function('fth', [xr,xth,xc,uF], [fth_sym])
 
     return fr, fth
  
@@ -153,8 +153,8 @@ for i in range(2*N+1):
         fr_left, fr_mid, fr_right = \
             fr(xr_left, uF_left), fr(xr_mid, uF_mid), fr(xr_right, uF_right)
         fth_left, fth_mid, fth_right = \
-            fth(xth_left, xc_left, uF_left), fth(xth_mid, xc_mid, uF_mid), \
-            fth(xth_right, xc_mid, uF_right)
+            fth(xr_left, xth_left, xc_left, uF_left), fth(xr_mid, xth_mid, xc_mid, uF_mid), \
+            fth(xr_right, xth_right, xc_right, uF_right)
 
         # interpolation constraints
         opti.subject_to( \
@@ -290,11 +290,11 @@ for line in lines[1+nj:1+2*nj]:
 anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1, 
     interval=tf*1000/(2*N+1), repeat=True, blit=False)
 
-'''
+#'''
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('potato_test_2D_angleOnly' + '.mp4', writer=writer)
-'''
+anim.save('potato_test_2D_bugfix_angleOnly' + '.mp4', writer=writer)
+#'''
 
 plt.show()
