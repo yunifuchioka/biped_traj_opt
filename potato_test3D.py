@@ -29,6 +29,43 @@ I_inv = np.diag(1/I_vals)
 g = np.array([0, 0, -9.81]) # gravitational acceleration
 mu = 0.8 #friciton coefficient
 
+tf = 7 # final time of interval
+N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2*N+1
+t = np.linspace(0,tf, 2*N+1) # discretized time
+dt = tf/(2*N)
+
+# objective cost weights
+Qr = np.array([1000, 1000, 1000])
+Qrd = np.array([1, 1, 1])
+Qth = np.array([50, 50, 50])
+Qw = np.full(3, 10)
+Qc = np.full((nj3), 1000)
+Qcd = np.full((nj3), 10)
+RF = np.full((nj3), 0.0001)
+
+Kp = np.linalg.solve(np.array([[2,1,1],[1,2,1],[1,1,2]]), 2*Qth) #3 element vector
+Gp = sum(Kp)*np.eye(3)-np.diag(Kp) #3x3 matrix
+
+def derive_rotMat():
+    s = ca.SX.sym('s', 3)
+    th = ca.SX.sym('th')
+
+    # cross product matrix
+    skew_sym = ca.SX(np.array([ \
+            [0, -s[2], s[1]],
+            [s[2], 0, -s[0]],
+            [-s[1], s[0], 0]
+        ]))
+    skew = ca.Function('skew', [s], [skew_sym])
+
+    # rotation matrix using Rodrigues' rotation formula
+    rotMat_sym = ca.SX.eye(3) + ca.sin(th)*skew_sym + (1-ca.cos(th))*skew_sym@skew_sym
+    rotMat = ca.Function('rotMat', [th, s], [rotMat_sym])
+
+    return skew, rotMat
+
+skew, rotMat = derive_rotMat()
+
 Rs_r = np.eye(3)
 #Rs_r = Rotation.from_rotvec(37*pi/180 * np.array([0, 1, 0])).as_matrix()
 ps_r = np.zeros((3,1))
@@ -38,28 +75,16 @@ Rs_l = Rs_r
 ps_l = ps_r
 #ps_l = np.array([0, 0, 0.3])[:,None]
 
-tf = 7 # final time of interval
-N = int(tf*4) # number of hermite-simpson finite elements. Total # of points = 2*N+1
-t = np.linspace(0,tf, 2*N+1) # discretized time
-dt = tf/(2*N)
-
-# objective cost weights
-Qr = np.array([1000, 1000, 1000])
-Qrd = np.array([1, 1, 1])
-#Qth = np.array([100, 100, 100])
-Qw = np.full(3, 10)
-Qc = np.full((nj3), 1000)
-Qcd = np.full((nj3), 10)
-RF = np.full((nj3), 0.0001)
-
 r_traj = np.array([ \
     #np.repeat(0, 2*N+1),
-    0.1*np.sin(t),
-    #np.repeat(0, 2*N+1),
-    0.1*np.cos(t),
+    0.2*np.sin(2*t),
+    np.repeat(0, 2*N+1),
+    #0.15*np.cos(2*t),
     np.repeat(1.45, 2*N+1)
     #1.2 + 0.2*np.cos(2*t)
     ])
+
+TH_des = np.eye(3)
 
 c_des = np.array([ \
     np.repeat(foot_size[0]/2, 2*N+1),
@@ -91,26 +116,6 @@ c_normal_dist = np.vstack((Rs_r.T[2,:] @ c_des_rel[0:3,:], Rs_r.T[2,:] @ c_des_r
 # set Fz=0 when c_des not in contact with ground
 F_des[2::3,:][np.abs(c_normal_dist)>=TOL] = 0
 
-def derive_rotMat():
-    s = ca.SX.sym('s', 3)
-    th = ca.SX.sym('th')
-
-    # cross product matrix
-    skew_sym = ca.SX(np.array([ \
-            [0, -s[2], s[1]],
-            [s[2], 0, -s[0]],
-            [-s[1], s[0], 0]
-        ]))
-    skew = ca.Function('skew', [s], [skew_sym])
-
-    # rotation matrix using Rodrigues' rotation formula
-    rotMat_sym = ca.SX.eye(3) + ca.sin(th)*skew_sym + (1-ca.cos(th))*skew_sym@skew_sym
-    rotMat = ca.Function('rotMat', [th, s], [rotMat_sym])
-
-    return skew, rotMat
-
-skew, rotMat = derive_rotMat()
-
 # trajectory optimization #############################################################
 opti = ca.Opti()
 
@@ -127,6 +132,7 @@ for i in range(2*N+1):
         J += Qr[r_idx]*(XR[r_idx,i]-xr_des[r_idx,i])**2
         J += Qrd[r_idx]*(XR[nr+r_idx,i]-xr_des[nr+r_idx,i])**2
 
+    J += 0.5*ca.trace(Gp - Gp @ TH_des.T @ XTH[:,3*i:3*i+3])
     for th_idx in range(3):
         J += Qw[th_idx]*(XW[th_idx,i])**2
 
@@ -142,8 +148,9 @@ opti.minimize(J)
 
 # initial condition constraint
 opti.subject_to(XR[:,0] ==  xr_des[:,0])
-opti.subject_to(XTH[:,:3] ==  np.eye(3))
-opti.subject_to(XW[:,0] ==  np.zeros((3,1)))
+#opti.subject_to(XTH[:,:3] ==  np.eye(3))
+opti.subject_to(XTH[:,:3] ==  rotMat(0.4, [1,0,0]))
+#opti.subject_to(XW[:,0] ==  np.zeros((3,1)))
 opti.subject_to(XC[:,0] ==  c_des[:,0])
 
 for i in range(2*N+1):
@@ -371,7 +378,7 @@ anim = animation.FuncAnimation(anim_fig, animate, frames=2*N+1,
 # uncomment to write to file
 Writer = animation.writers['ffmpeg']
 writer = Writer(fps=int((2*N+1)/tf), metadata=dict(artist='Me'), bitrate=1000)
-anim.save('potato_test_3D_xy_rot' + '.mp4', writer=writer)
+anim.save('potato_test_3D_angleControlOff' + '.mp4', writer=writer)
 '''
 
 plt.show()
