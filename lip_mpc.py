@@ -50,6 +50,37 @@ def footstep_zmp(footsteps):
     dy_dx = np.zeros((2, len(x)))
     return CubicHermiteSpline(t, np.vstack([x,y]), dy_dx, axis=1, extrapolate=True)
 
+# Input footsteps for only one foot (so every other foot in the list), and returns a function which returns foot (x, y, z) for a given time
+def foot_trajectory(footsteps, height=0.1, duty_cycle=0.5):
+    dt = (footsteps[1].t - footsteps[0].t) / 2
+
+    pos = []
+    t = []
+    dpos_dt = []
+    for footstep in footsteps:
+        if len(pos) > 0:
+            liftoff = pos[-1]
+            touchdown = np.array([footstep.x, footstep.y, 0])
+            midpoint = (liftoff * 0.5 + touchdown * 0.5) + np.array([0, 0, height])
+            midlift = (liftoff * 0.75 + touchdown * 0.25) + np.array([0, 0, height * 0.75])
+            midtouchdown = (liftoff * 0.25 + touchdown * 0.75) + np.array([0, 0, height * 0.75])
+            dpos_dt.append((touchdown - liftoff) * 1.5 / (dt * (1 - duty_cycle)))
+            # pos.append(midlift)
+            pos.append(midpoint)
+            # pos.append(midtouchdown)
+            t.append(0.5 * (footstep.t - duty_cycle * dt - t[-1]) + t[-1])
+
+            # t += list(np.array([0.25, 0.5, 0.75]) * (footstep.t - duty_cycle * dt - t[-1]) + t[-1])
+        pos.append(np.array([footstep.x, footstep.y, 0]))
+        dpos_dt.append(np.array([0, 0, 0]))
+        t.append(footstep.t - duty_cycle * dt)
+        pos.append(np.array([footstep.x, footstep.y, 0]))
+        dpos_dt.append(np.array([0, 0, 0]))
+        t.append(footstep.t + duty_cycle * dt)
+
+
+    return CubicHermiteSpline(t, np.array(pos).T, np.array(dpos_dt).T, axis=1, extrapolate=True)
+
 class LipOpti():
     def __init__(self, solution_duration=2, dt=0.1):
         # com height
@@ -188,6 +219,9 @@ class LipOpti():
         if not plot:
             return sol_interpolator(np.arange(0, self.t_f, dt))
         
+        right_foot_trajectory = foot_trajectory(footsteps[::2])(np.arange(t_i, self.t_f + t_i, dt))
+        left_foot_trajectory = foot_trajectory(footsteps[1::2])(np.arange(t_i, self.t_f + t_i, dt))
+
         fig = go.Figure()
         fig.add_trace(go.Scatter3d(
             x = [f.x for f in footsteps],
@@ -220,10 +254,44 @@ class LipOpti():
             marker_size=3,
             name = "COM Trajectory"
         ))
+        fig.add_trace(go.Scatter3d(
+            x = right_foot_trajectory[0],
+            y = right_foot_trajectory[1],
+            z = right_foot_trajectory[2],
+            text = self.t + t_i,
+            marker_size=3,
+            name = "Right Foot Trajectory"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x = left_foot_trajectory[0],
+            y = left_foot_trajectory[1],
+            z = left_foot_trajectory[2],
+            text = self.t + t_i,
+            marker_size=3,
+            name = "Left Foot Trajectory"
+        ))
         fig.update_layout(scene_aspectmode="data", legend_orientation="h")
+        # fig.show()
+        fig = go.Figure()
+        for trajectory in left_foot_trajectory, right_foot_trajectory:
+
+            fig.add_trace(go.Scatter(
+                text = np.arange(t_i, self.t_f + t_i, dt),
+                # x = np.arange(t_i, self.t_f + t_i, dt),
+                x = trajectory[0],
+                y = trajectory[2],
+            ))
+
         fig.show()
 
-lip_opti = LipOpti(solution_duration=4, dt=0.25)
+
 footsteps = list(itertools.islice(footstep_generator(random=True), 6))
-lip_opti.get_solution(0, np.array([footsteps[0].x, 0, 0,0,0,0]), footsteps, plot=True)
+print(footsteps)
+# right_foot_trajectory = foot_trajectory(footsteps[::2])
+# t = np.linspace(-1,8, 2000)
+# px.line(x=right_foot_trajectory(t)[1], y=right_foot_trajectory(t)[2]).show()
+# exit()
+lip_opti = LipOpti(solution_duration=4, dt=0.25)
+
+print(lip_opti.get_solution(0, np.array([footsteps[0].x, 0, 0,0,0,0]), footsteps, plot=True))
 exit()
