@@ -26,17 +26,17 @@ Footstep = namedtuple('Footstep', ['t', 'x', 'y'])
 def footstep_generator(random=True):
     stride_duration = 0.8
     stride_length = 0.2
-    stride_width = 0.3
+    stride_width = 0
     t = 0
     x = 0
     side = -1
-    yield Footstep(t, x, 0)
-    t += stride_duration
+    # yield Footstep(t, x, -stride_width / 2)
+    # t += stride_duration
     yield Footstep(t, x, stride_width / 2)
     while True:
         t += stride_duration
-        x += np.random.normal(loc=stride_length, scale=0.05 if random else 0)
-        y = np.random.normal(loc = side * stride_width/2, scale=0.03 if random else 0)
+        x += np.random.normal(loc=stride_length, scale=0.1 if random else 0)
+        y = np.random.normal(loc = side * stride_width/2, scale=0.07 if random else 0)
         side *= -1
         yield Footstep(t, x, y)
 
@@ -184,6 +184,7 @@ class LipOpti():
         sol_x = np.array(solution.value(self.X))
         sol_interpolator = CubicSpline(self.t, sol_x, axis=1)
         sol_y = np.array(solution.value(self.y(sol_x)))
+        
         if not plot:
             return sol_interpolator(np.arange(0, self.t_f, dt))
         
@@ -192,30 +193,37 @@ class LipOpti():
             x = [f.x for f in footsteps],
             y = [f.y for f in footsteps],
             z = [0] * len(footsteps),
+            name = "Footstep",
         ))
         fig.add_trace(go.Scatter3d(
             x = y_des[0],
             y = y_des[1],
             z = [0] * len(y_des[0]),
             text = self.t + t_i,
-            marker_size=5,
+            marker_size=2,
             mode="markers",
+            name = "Desired ZMP Trajectory",
         ))
         fig.add_trace(go.Scatter3d(
             x = sol_y[0],
             y = sol_y[1],
             z = [0] * len(y_des[0]),
             text = self.t + t_i,
+            marker_size=3,
+            name = "Computed ZMP Trajectory",
         ))
         fig.add_trace(go.Scatter3d(
             x = sol_x[0],
             y = sol_x[1],
             z = [self.com_height] * len(y_des[0]),
             text = self.t + t_i,
+            marker_size=3,
+            name = "COM Trajectory"
         ))
+        fig.update_layout(scene_aspectmode="data", legend_orientation="h")
         fig.show()
 
-lip_opti = LipOpti(solution_duration=8)
-footsteps = list(itertools.islice(footstep_generator(random=False), 20))
-lip_opti.get_solution(0, np.array([footsteps[0].x, footsteps[0].y, 0,0,0,0]), footsteps, plot=True)
+lip_opti = LipOpti(solution_duration=4, dt=0.25)
+footsteps = list(itertools.islice(footstep_generator(random=True), 6))
+lip_opti.get_solution(0, np.array([footsteps[0].x, 0, 0,0,0,0]), footsteps, plot=True)
 exit()
